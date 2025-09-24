@@ -1,0 +1,246 @@
+---
+title: "bestSelling_games_adjusted"
+author: "Roberto Torrecilla Ramírez"
+date: "2025-09-04"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+bestSelling_games_original <- read.csv('/Users/rovkmadriz/Documents/MasterAnalisisdeDatos/1. TFM/CSV/bestSelling_games.csv')
+View(bestSelling_games_original)
+```
+
+```{r}
+bsg_originalDF <- data.frame(bestSelling_games_original)
+bsg_originalDF
+```
+
+```{r}
+# --- Paquetes
+library(dplyr)
+library(stringr)
+library(lubridate)
+
+# Aseguramos que la columna sea numérica
+bsg_originalDF$estimated_downloads <- as.numeric(bsg_originalDF$estimated_downloads)
+
+# Quitamos NAs por seguridad
+df <- bsg_originalDF[!is.na(bsg_originalDF$estimated_downloads), ]
+
+# Ordenamos por descargas (de mayor a menor y de menor a mayor)
+df_sorted_desc <- df[order(-df$estimated_downloads), ]   # descendente
+df_sorted_asc  <- df[order(df$estimated_downloads), ]    # ascendente
+
+# Seleccionamos 10 más descargados y 10 menos descargados
+top10_downloads <- head(df_sorted_desc, 10)
+bottom10_downloads <- head(df_sorted_asc, 10)
+
+# Unimos en un solo dataframe de 20 juegos
+TFM_grafos_selected20 <- rbind(top10_downloads, bottom10_downloads)
+
+# Vista previa de columnas clave
+TFM_grafos_selected20DF <- data.frame(TFM_grafos_selected20[, c("game_name", "developer", "user_defined_tags","supported_os","price", "release_date", "rating", "estimated_downloads")])
+TFM_grafos_selected20DF
+```
+
+```{r}
+# Ruta donde guardar el CSV (ajusta a tu proyecto)
+#out_file <- file.path(getwd(), "TFM_grafos_selected20.csv")
+
+# Exportar
+#write.csv(TFM_grafos_selected20DF, out_file, row.names = FALSE)
+
+#cat("Archivo exportado en:", out_file, "\n")
+
+
+```
+
+```{r}
+TFM_grafos_main_csv<- read.csv('/Users/rovkmadriz/Documents/MasterAnalisisdeDatos/1. TFM/R/TFM_Grafos/TFM_grafos_selected20_mod.csv', stringsAsFactors = FALSE)
+
+## === 1) Utilidades mínimas ===
+trim <- function(x) gsub("^\\s+|\\s+$", "", x)
+slug <- function(x, prefix = "", n = 18) {
+  x <- as.character(x)
+  x <- iconv(x, to = "ASCII//TRANSLIT")          # quita acentos
+  x <- toupper(x)
+  x <- gsub("[^A-Z0-9]+", "_", x)                # no letras/números -> _
+  x <- gsub("^_|_$", "", x)                      # bordes
+  x <- substr(x, 1, n)
+  paste0(prefix, x)
+}
+
+## === 2) Normalización ligera de columnas ===
+df <- TFM_grafos_main_csv
+df$game_name           <- trim(as.character(df$game_name))
+df$developer           <- trim(as.character(df$developer))
+df$release_date        <- as.character(df$release_date)
+df$rating              <- suppressWarnings(as.numeric(df$rating))
+df$price               <- suppressWarnings(as.numeric(df$price))
+df$estimated_downloads <- suppressWarnings(as.numeric(df$estimated_downloads))
+df$supported_os        <- as.character(df$supported_os)
+df$user_defined_tags   <- as.character(df$user_defined_tags)
+
+## IDs y año
+df$juego_id   <- slug(df$game_name, "J_")
+df$estudio_id <- slug(df$developer, "E_")
+df$anio       <- suppressWarnings(as.integer(substr(df$release_date, 1, 4)))
+
+## === 3) DataFrames finales ===
+
+## 3.1 juegos.csv
+juegos <- data.frame(
+  juego_id   = df$juego_id,
+  titulo     = df$game_name,
+  anio       = df$anio,
+  plataformas= df$supported_os,
+  rating     = df$rating,
+  precio     = df$price,
+  estudio_id = df$estudio_id,
+  stringsAsFactors = FALSE
+)
+
+## 3.2 estudios.csv (únicos)
+keep_est <- !duplicated(df$estudio_id)
+estudios <- data.frame(
+  estudio_id = df$estudio_id[keep_est],
+  nombre     = df$developer[keep_est],
+  pais       = NA_character_,   # si no lo tienes, déjalo vacío
+  stringsAsFactors = FALSE
+)
+
+## 3.3 juegos_generos.csv (explode de tags por , o ;)
+split_tags <- function(s) {
+  if (is.na(s) || s == "") return(character(0))
+  s <- gsub(";", ",", s)
+  tags <- unlist(strsplit(s, ","))
+  trim(tags)
+}
+
+jg_list <- lapply(seq_len(nrow(df)), function(i) {
+  tags <- split_tags(df$user_defined_tags[i])
+  if (length(tags) == 0) return(NULL)
+  data.frame(
+    juego_id = df$juego_id[i],
+    genero_nombre = tags,
+    stringsAsFactors = FALSE
+  )
+})
+
+juegos_generos <- if (length(jg_list) > 0) do.call(rbind, jg_list) else
+  data.frame(juego_id = character(0), genero_nombre = character(0), stringsAsFactors = FALSE)
+
+## limpiar vacíos y duplicados
+if (nrow(juegos_generos) > 0) {
+  ok <- !is.na(juegos_generos$genero_nombre) & juegos_generos$genero_nombre != ""
+  juegos_generos <- juegos_generos[ok, , drop = FALSE]
+  juegos_generos$genero_nombre <- trim(juegos_generos$genero_nombre)
+  juegos_generos <- juegos_generos[!duplicated(juegos_generos), , drop = FALSE]
+}
+
+## 3.4 generos.csv (únicos)
+generos <- if (nrow(juegos_generos) > 0) {
+  data.frame(genero_nombre = sort(unique(juegos_generos$genero_nombre)), stringsAsFactors = FALSE)
+} else {
+  data.frame(genero_nombre = character(0), stringsAsFactors = FALSE)
+}
+```
+
+```{r}
+out_dir <- "/Users/rovkmadriz/Documents/MasterAnalisisdeDatos/1. TFM/R/TFM_Grafos"
+
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+## Exportamos los CSVs
+write.csv(juegos,         file.path(out_dir, "juegos.csv"),         row.names = FALSE, na = "")
+write.csv(estudios,       file.path(out_dir, "estudios.csv"),       row.names = FALSE, na = "")
+write.csv(generos,        file.path(out_dir, "generos.csv"),        row.names = FALSE, na = "")
+write.csv(juegos_generos, file.path(out_dir, "juegos_generos.csv"), row.names = FALSE, na = "")
+
+cat("✅ CSVs guardados en:\n", normalizePath(out_dir), "\n")
+
+```
+ 
+```{r}
+
+library(readr)
+
+# 2. Leer el CSV original de relaciones
+juegos_generos <- read_csv('/Users/rovkmadriz/Documents/MasterAnalisisdeDatos/1. TFM/R/TFM_Grafos/juegos_generos.csv')
+
+# 3. Añadir un ID único por fila (JG_001, JG_002, …)
+juegos_generos$jg_id <- sprintf("JG_%03d", seq_len(nrow(juegos_generos)))
+
+# 4. Reordenar columnas: primero el id, luego las demás
+juegos_generos <- juegos_generos[, c("jg_id", names(juegos_generos)[names(juegos_generos) != "jg_id"])]
+
+# 5. Guardar un nuevo CSV con el id incluido
+write_csv(juegos_generos, "juegos_generos_con_id.csv")
+
+cat("✅ Listo: se creó 'juegos_generos_con_id.csv' con un ID único por registro\n")
+
+```
+```{r}
+microjuego_datos_internos <- read.csv('/Users/rovkmadriz/Documents/MasterAnalisisdeDatos/1. TFM/CSV/isla2_flat_master.csv')
+View(microjuego_datos_internos)
+```
+
+```{r}
+# Paquetes
+library(readr)
+
+# Carpeta donde guardar los CSVs
+out_dir <- '/Users/rovkmadriz/Documents/MasterAnalisisdeDatos/1. TFM/R/TFM_Grafos/Isla 2 microjuego'
+dir.create(out_dir, showWarnings = FALSE)
+
+# Para cada columna del dataframe, exportar un CSV
+for (col in names(microjuego_datos_internos)) {
+  df_col <- data.frame(microjuego_datos_internos[[col]])
+  names(df_col) <- col
+  file_path <- file.path(out_dir, paste0(col, ".csv"))
+  write_csv(df_col, file_path)
+  cat("Exportado:", file_path, "\n")
+}
+
+```
+```{r}
+
+library(tidyverse)
+# --- Cargar datos ---
+scores <- read.csv('/Users/rovkmadriz/Documents/MasterAnalisisdeDatos/1. TFM/TFM_Grafos/ragas_scores.csv')
+metrics <- c("context_precision", "context_recall",
+             "answer_relevancy", "faithfulness")
+
+#Crear tabla con medias sobre no-NA
+summary_means <- data.frame(
+  metrics,
+  mean_no_NA   = sapply(metrics, function(m) mean(scores[[m]], na.rm = TRUE)),
+  pct_2_3_over_total = sapply(metrics, function(m) {
+    vals <- scores[[m]]
+    n_over <- sum(vals >= (2/3), na.rm = TRUE)   # cuenta de valores >= 2/3
+    100 * n_over / n_total                       # sobre total incluyendo NA
+  }),
+  pct_2_3_no_NA = sapply(metrics, function(m) {
+    vals <- scores[[m]][!is.na(scores[[m]])]
+    if (length(vals) == 0) return(NA_real_)
+    100 * mean(vals >= (2/3))                    # sobre los no-NA
+  })
+)
+
+# Ver en consola
+print(summary_means)
+options(digits = 8, scipen = 999)
+write.csv(summary_means,
+          "ragas_eval_summary_means_v2.csv",
+          row.names = FALSE, quote = FALSE)
+```
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
